@@ -1,0 +1,474 @@
+---
+title: "Differential expresion analysis. Kallisto and DESeq2 pipeline"
+author: "Álvaro Ruiz Tabas"
+date: '2022-07-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Differential expresion analysis. Kallisto and DESeq2 pipeline
+
+(here we have the same that is written in README file)
+
+This script is a general version with the commands lines to import data generated with kallisto and do the differential expression analysis with DESeq2. 
+
+IT'S CRUCIAL TO KNOW THAT IN THIS PIPELINE WE ARE NOT CONSIDERING ISOFORMS. WE ARE CONSIDERING EACH DETECTED TRANSCRIPT AS AN INDEPENDENT GENE. In future I want to add how manage the isoforms but here we don't consider it son take this analysis as a first approximation to your data.
+
+You have to change names or add things to fits the script to your data. This is only the backbone of the script. 
+
+I highly recommend to keep on hand these articles about DESeq2. They are really helpfull to resolve any doubt:
+https://rstudio-pubs-static.s3.amazonaws.com/329027_593046fb6d7a427da6b2c538caf601e1.html#example-1-two-group-comparison
+http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
+
+Any question don't doubt and ask.
+
+## 1. Import data, visualization and DESeq2
+
+### 1.1. Packages requieres
+```{r Package instalation} 
+# eval = FALSE para que al knitear no corran estos bloque de instalación de paquetes, poner como TRUE ci es necesaria la instalación. 
+
+install.packages(c("BiocManager", "dplyr", "gplots", "ggplot2","ggrepel", "biomaRt", "pheatmap", "reshape2", "RColorBrewer") )
+```
+
+```{r BiocManager packages installation}
+
+BiocManager::install(c("limma", "DESeq2", "AnnotationDbi", "org.Mm.eg.db", "ReportingTools", "GO.db", "GOstats", "pathview", "gage", "gageData", "select", "clusterProfiler"))
+```
+
+### 1.2. Import data
+
+We use tximport package to generate the dataframe (counts_data) with our abundance.h5 files. We also need a file with all the transcript names. This file is call Nombre_genes.txt and it can be generated copying the first column from any abundance.tsv file (without header).
+We also need a CSV file with the name of the samples and its conditions.  
+
+```{r Import counts from abundance.h5}
+
+library(DESeq2)  #paquete que proporciona m?todos para analizar la expresión diferencial
+library(dplyr) # paquete que contiene funciones dise?adas para la manipulaci?n de marcos de datos
+library(tximport) #cuantificaciOn de la transcripci?n se ha hecho con Salmon, Kallisto, etc
+library(readxl) #leer archivos con extensi?n excel
+library(readODS) #leer archivos con extensi?n open document
+library(rhdf5) #paquete que permite el intercambio de conjuntos de datos y/o complejos entre R y otro software
+library(ggplot2)
+library(pheatmap)
+library(reshape2)
+library(RColorBrewer)
+
+#setwd("Ruta/al/directorio/de/trabajo")
+setwd("C:path/to/your/working/directory")
+dir<-getwd()
+
+Nombre_genes <- read.table("Nombre_genes.txt", head =FALSE)
+# Import Nombre_genes.txt with all the transcript names
+
+Nombre_genes <- cbind(Nombre_genes, Nombre_genes[,1]) 
+# Duplicate the columnas (tximport needs it)
+
+colnames(Nombre_genes) <- c("geneID", "transcriptsID")
+head(Nombre_genes)
+# Change columns names from Nombre_genes
+
+write.table(Nombre_genes, file="Nombre_Gen_Transcrito.txt", sep="\t", quote = FALSE, row.names = FALSE) 
+# Export the file
+
+# We have to create a file called Design.txt with the names of the folders were our abundance.h5 files are. I recommend to have 1 folder for replica and call it describing his experimental group. Design.txt must have "Sample" as column name
+
+samples <- read.table("Design.txt", head = TRUE) 
+# Import Design info
+
+archivos <- file.path(dir, samples$Sample, "abundance.h5") 
+archivos
+# Import all abundance.h5 files according with teh Design.txt folders names were the files are.
+
+names(archivos) <- c("Name_1", "Name_2","...") 
+archivos
+# Asign name to all abundance.h5 files. Highly recommend to use replica number and experimental group. NAMES MUST BE IN THE SAME ORDER THAT YOU HAVE IMPORT THE FILES WHICH CORRESPOND TO THE Design.txt FILE ORDER.
+
+
+tx2gene <- read.table("Nombre_Gen_Transcrito.txt", header = TRUE) 
+head(tx2gene)
+# Import duplicate names of transcripts 
+
+
+txi <- tximport(archivos, type = "kallisto", tx2gene = tx2gene, countsFromAbundance = "no", txOut = FALSE) 
+# Create dataframe with counts from the diferents samples
+
+counts_data <- txi[["counts"]]
+counts_data <- as.data.frame(counts_data)
+# txi has lots of data, we only want counts data. We save it on counts_data variable
+
+head(counts_data) 
+# Visualizate it 
+
+# counts_data <- write.table(counts_data) # <- Se crushea, son muchos datos
+```
+
+```{r Import sample imformation}
+
+colData <- read.csv('sample_info.csv')
+# Import file with samples and its conditions. KEEP THE SAMPLES ORDER 
+```
+
+Check if Coldata rows and names from counts_data ante in the same order
+
+```{r Comprobación de "sincronización" entre archivos}
+
+all(colnames(counts_data) %in% rownames(colData))
+# Check if both have same names
+
+all(colnames(counts_data) == rownames(colData))
+# Check if they are in the same order
+```
+
+### 1.3. Counts visualization
+```{r Number of counts per sample}
+
+summary(counts_data)
+# A summary about the counts of the samples
+
+par(mar=c(8,4,4,1))
+barplot(colSums(counts_data)/1e6, names.arg = c("Sample_1", "Sample_2", "..."), xlab = "Samples", ylab = "Millions of counts", main = "Libraries size", col = brewer.pal(4, name = "Accent"))
+# Bar plot representation of the counts from samples
+```
+
+```{r Logaritmic representation of librery from each cample}
+
+logcountsdata <- log2(1+counts_data)
+logcountsdata<- as.data.frame(logcountsdata)
+# Dataframe with logaritmic transformation of counts number
+hist(logcountsdata$Sample_1, br=20, xlab = "Log (counts)", ylab = "Frecuency", main = "Sample 1 library composition", col = "bisque4", ylim = c(0,80000))
+# Repeit this with all the samples you want to see its composition.
+```
+
+```{r Scatter plot. Similarit between samples}
+
+plot(logcountsdata$Sample_2, logcountsdata$Sample_1, xlab = "Sample 2 composition", ylab = "Sample 2 composition", main = "Sample 1 vs Sample 2", col = "darkslateblue")
+# A 45º angle is obteined if the two samples are just the same. You can do this between replicas or samples from differents groups.
+```
+
+### 1.4. DESeq2
+
+```{r Creating DESeq2}
+
+dds <- DESeqDataSetFromMatrix(countData = round (counts_data),
+colData = colData, design = ~ Condition1 + Condition2 + Condition1:Condition2) 
+
+# Condition1 could be genotype, condition2 could be treatment or whatever depending on you data
+
+dds$Genotipo <- relevel(dds$Condition1, ref = "control_condition1")
+dds$Genotipo <- relevel(dds$Condition2, ref = "control_condition2")
+# Establish our control for each condition
+```
+
+```{r DESeq2 ejecutation}
+
+dds <- DESeq(dds)
+# Ejecution
+
+nrow(dds)
+# See number of rows. It must be the same than counts_data
+```
+
+```{r Filtering DESeq2 results}
+
+dds <- dds[rowSums(counts(dds)) >= 10]
+# Filtering to remove low counts rows 
+
+nrow(dds)
+# See how much rows pass the filter
+```
+
+```{r Normalize and export data}
+
+norm_Counts <- counts(dds, normalized = TRUE)
+norm_Counts <- as.data.frame(norm_Counts)
+nrow(dds)
+
+write.table(norm_Counts, file="Normalized_Counts", sep="\t", quote = FALSE, row.names = TRUE) 
+
+```
+
+## 2. DESeq2 result representation
+
+### 2.1. Results explorations
+```{r DESeq2 comparations}
+resultsNames(dds)
+```
+
+```{r Extracting DESq2 results}
+# This is a crucial part of the pipeline. Depending on what comparatives do you want to analyze, you have to extract ones or another data. For 2 conditions, lets say Genotype (WT and TG) and treatment (control and treated), the possible comparatives are the next. The things you have to write on contrast or list are the ones that you see running the previous command. I highly recommend to check the article I put in the beggining if there are any doubts (https://rstudio-pubs-static.s3.amazonaws.com/329027_593046fb6d7a427da6b2c538caf601e1.html#example-1-two-group-comparison)
+
+#ANALISIS WT-control vs WT-treated. Effect of the treatment
+res <- results(dds, contrast = c("Treatment", "treated", "control"))
+
+#ANALISIS_WT-control vs TG-control. Effect of the genotype
+res <- results(dds, contrast = c("Genotype", "TG", "WT"))
+
+# ANALISIS WT-treated vs TG-treated. Differences between WT and TG trated 
+res <- results(dds, list( c( "Genotype_TG_vs_WT","GenotypoTG.Treatmenttreated")))
+
+# ANALISIS TG-control vs TG-NR. Effect of the treatment on the TG
+res <- results(dds, list( c("Treatment_treated_vs_control","GenotypeTG.Treatmenttreated")))
+
+# ANALISIS INTERACTION. Is the effect of the treatment different between genotypes?
+res <- results(dds, name = "GenotypeTG.Treatmenttreated")
+
+res 
+summary(res)
+# Visualize results
+```
+
+```{r Ordering and exporting results}
+
+res_Ordered <- res[order(res$padj),] # Ordering depending on p adjust value
+res_Ordered_DF <- as.data.frame(res_Ordered)
+
+res_Ordered_DF <- na.omit(res_Ordered_DF)
+
+res_Ordered_DF$GENES <- ifelse(res_Ordered_DF$padj <= 0.05, "SIGNIFICANT", "NO SIGNIFICANT")
+# Considering significant those with p value adjust less than 0.05
+
+write.table(res_Ordered, file="res_Ordered", sep="\t", quote = FALSE, row.names = TRUE) 
+
+
+
+head(res_Ordered_DF)
+
+```
+
+```{r Using BiomaRt to add IDs from differents databases}
+library(org.Mm.eg.db) # Mus musculus
+library(org.Hs.eg.db) # Homo sapiens
+library(biomaRt)
+library(tidyverse)
+
+res_Ordered_DF$ensembl_transcript_id = gsub("\\..*","", row.names(res_Ordered_DF))
+res_Ordered_DF$ensembl_transcript_id_version <- row.names(res_Ordered_DF)
+ENSEMBL_IDs <- as.data.frame(res_Ordered_DF$ensembl_transcript_id)
+colnames(ENSEMBL_IDs) <- "ensembl_transcript_id"
+# input transcript IDs
+
+listEnsembl()
+ENSEMBL <- useEnsembl(biomart = "genes") #, mirror = "uswest") If it gives error.
+datasets <- listDatasets(ENSEMBL)
+# Available data bases
+
+ENSEMBL_CONECTION <- useEnsembl("ensembl", dataset = 'mmusculus_gene_ensembl')#,  mirror = 'uswest') if it gives error                        #Change if you use other organism
+
+attr <- listAttributes(ENSEMBL_CONECTION)
+filters <- listFilters(ENSEMBL_CONECTION)
+# Filters and attributes available to add differents IDs. Here I add the ensembl and the external name of the genes
+
+ensembl2gene <- getBM(attributes = c("ensembl_transcript_id",
+                                     "external_gene_name", "ensembl_gene_id"), # Data to get
+                      filters = "ensembl_transcript_id", # Data type you input
+                      values = ENSEMBL_IDs$ensembl_transcript_id, # Input data
+                      mart = ENSEMBL_CONECTION) 
+
+idmap <- merge (x = ENSEMBL_IDs, y = ensembl2gene,
+               by="ensembl_transcript_id",  sort = FALSE) #, all.x=TRUE)
+# Merging data to remove genes without some names
+
+res_Ordered_DF <- merge (x = res_Ordered_DF, y = idmap,
+               by="ensembl_transcript_id",  sort = FALSE)
+# Merging with results
+
+row.names(res_Ordered_DF) <- res_Ordered_DF$ensembl_transcript_id_version
+# Changing row names
+
+write.table(res_Ordered_DF, file = "RESULTADOS_WT_NR_vs_TG_NR.txt", sep = "\t", quote = FALSE)
+```
+
+
+### 2.2. MA plot 
+```{r MA plot}
+
+DESeq2::plotMA(res, ylim=c(-20,20), xlab = "Counts normaliced mean", ylab = "Log2 Fold Change", main = "MA plot", colSig = "blue2", colNonSig = "darkgray")
+
+```
+
+### 2.3. MA plot (other way)
+```{r Other way MA plot}
+
+myColors <- c("darkgray", "blue2")
+names(myColors) <- levels(res_Ordered_DF$GENES)
+colScale <- scale_colour_manual(name = "GENES",values = myColors)
+# Establish colours
+
+MA_plot <- ggplot(res_Ordered_DF, aes(x = log10(baseMean), y = log2FoldChange, color = GENES)) + geom_point() + theme(legend.position = "bottom")
+
+MA_plot <- MA_plot + colScale + labs(title="MA plot") + theme (plot.title = element_text(hjust = 0.5))  
+
+MA_plot
+
+```
+
+### 2.4. Vulcano plot 
+```{r Volcano plot easy}
+
+Vulcano <- ggplot(res_Ordered_DF, main = "Vulcano plot", aes(x = log2FoldChange, y = -log10(padj) , color = GENES)) + geom_point() + theme(legend.position = "bottom") 
+
+Vulcano <- Vulcano + colScale + labs(title= "Vulcano plot") + theme (plot.title = element_text(hjust = 0.5)) 
+
+Vulcano
+```
+
+### 2.5. PCA plot and similarity heatmap
+```{r PCA plot}
+
+vsd <- vst (dds, blind = FALSE)
+
+plot_PCA <- plotPCA(vsd, intgroup = c("Genotype","Treatment"), returnData = TRUE) 
+
+myColors <- c("green", "blueviolet", "red", "black")
+names(myColors) <- levels(plot_PCA$group)
+colScale <- scale_colour_manual(name = "Grupos",values = myColors)
+
+percentVar <- round(100 * attr(plot_PCA, "percentVar"))
+
+plot_PCA <- ggplot(plot_PCA , aes( x = PC1, y = PC2, color = group)) + geom_point() + xlab(paste0("PC1: ", percentVar[1], "% variance")) + ylab(paste0("PC2: ", percentVar[2], "% variance"))+ labs(title="PCA plot") + theme (plot.title = element_text(hjust = 0.5), legend.position = "bottom") + colScale
+
+plot_PCA
+```
+
+```{r Similarity heatmap}
+
+sampleDists <- dist(t(assay(vsd)))
+
+sampleDistMatrix <- as.matrix(sampleDists)
+
+colors <- colorRampPalette( rev(brewer.pal(9, "Greens")) )(255)
+
+par(mar=c(0,0,0,4))
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows= sampleDists,
+         clustering_distance_cols= sampleDists,
+         col=colors, angle_col = 90, cluster_rows = FALSE, cluster_cols = FALSE, labels_col = 
+           c("Sample1", "Sample2","..."),labels_row = c("Sample1", "Sample2","..."), border_color = NA)
+# Heatmap without clustering
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows= sampleDists,
+         clustering_distance_cols= sampleDists,
+         col=colors, angle_col = 90, labels_row = c("Sample1", "Sample2","..."), labels_col = 
+           c("Sample1", "Sample2","..."), border_color = NA)
+# Heatmap clustering
+```
+
+### 2.6. Heatmap
+```{r pheatmap}
+
+Sig_genes <- subset(res_Ordered_DF, padj <= 0.05)
+# Keep only significant genes
+
+All_sig <- merge(norm_Counts, Sig_genes, by = 0) 
+# Merge with annotated dataframe
+
+Sig_counts <- All_sig[,2:9]
+# Keep only counts
+
+row.names(Sig_counts) <- All_sig$Row.names 
+# Change row names
+
+pheatmap(log2(Sig_counts + 1), scale = 'row', show_rownames = FALSE, treeheight_row = FALSE, treeheight_col = FALSE, main = "Heat map", labels_col = c("Sample1", "Sample2", "..."), angle_col = 45, cluster_cols = F, border_color = NA)
+```
+
+
+## 3. Funcional enrichment
+
+### 3.1. Exploring main genes
+```{r Biggest fold change gene}
+library("ggbeeswarm")
+
+topGene = row.names(Sig_genes)[1]
+# Keep only gene from first position
+
+Plot_counts <- plotCounts(dds, gene=topGene, intgroup = c("Genotype","Treatment"), returnData = TRUE) 
+Plot_counts <- ggplot(Plot_counts[1:8,], aes(x = Genotype:Treatment , y = count)) +
+  scale_y_log10() +  geom_beeswarm(cex = 5)
+Plot_counts <- Plot_counts + labs(title="Differential exresion of ...", x = "Groups", y = "Counts") + theme (plot.title = element_text(hjust = 0.5))  
+Plot_counts 
+```
+
+```{r Top 10 genes heatmap}
+
+Top_10 <- res_Ordered_DF [1:10,]
+
+Top_10 <- merge(Top_10, norm_Counts, by = 0)
+row.names(Top_10) <- Top_10$SYMBOL
+
+keep <- c ("Sample1", "Sample2", "...")
+
+Top_10 <- Top_10[,names(Top_10) %in% keep]
+
+
+pheatmap(log2(Top_10 +1), treeheight_row = FALSE, treeheight_col = FALSE, main = "Top 10 genes heatmap", labels_col = c("Sample1", "Sample2", "..."), angle_col = 45)
+```
+
+```{r Top genes (other representation)}
+
+Top_10_m <- melt(as.matrix(Top_10))
+# Reordering info
+names(Top_10_m) <- c("genes", "Sample", "Exp")
+# Rename columns
+
+Top_10_m$Tratamiento <- ifelse(grepl("control", Top_10_m$Sample), "control", "treated")
+
+myColors2 <- c("darkorange", "blueviolet")
+names(myColors2) <- levels(Top_10_m$Genotype)
+colScale2 <- scale_colour_manual(name = "Treatment",values = myColors2)
+
+TOP_GENES <- ggplot(Top_10_m , aes( x = Tratamiento, y = log2(Exp +1), color = Tratamiento)) + geom_point() + facet_grid(~ genes) + labs(title="Differential expresion of ...", x = "", y = "Log2 counts") + theme (plot.title = element_text(hjust = 0.5), legend.position = "bottom", axis.text.x =element_blank()) + colScale2
+
+TOP_GENES
+```
+
+### 3.2. Gene Ontology genes lists
+```{r Genes lists}
+
+library(GO.db)
+library(GOstats)
+
+sig_lfc <- 0.5
+# Establish significative fold change
+
+select_Genes_Up <- unique(All_sig[All_sig$log2FoldChange > sig_lfc, 'ensembl_gene_id'])
+select_Genes_Down <- unique(All_sig[All_sig$log2FoldChange < (-sig_lfc), 'ensembl_gene_id'])
+# Extrat only genes that overcome the fold change 
+
+DE_Genes <- unique(All_sig$ensembl_gene_id) # Keep all diferenctialy expressed genes
+cutOff <- 0.01
+# El conjunto total de genes
+
+DE_GENES <- as.data.frame(DE_Genes)
+write.table(DE_GENES, "DE_GENES.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+GENES_UP <- as.data.frame(select_Genes_Up)
+GENES_DOWN <- as.data.frame(select_Genes_Down)
+write.table(GENES_UP, "GENES_UP.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(GENES_DOWN, "GENES_DOWN.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# Saving a txt file with the genes up, down and all that are differential expresed
+
+Nombre_genes$ensembl_transcript_id = gsub("\\..*","", Nombre_genes$geneID)
+Nombre_genes <- getBM(attributes = c("ensembl_transcript_id",
+                                     "ensembl_gene_id"), # Datos a obtener
+                      filters = "ensembl_transcript_id", # Tipo de datos que aportas
+                      values = Nombre_genes$ensembl_transcript_id, # Input de datos
+                      mart = ENSEMBL_CONECTION) 
+# Annoting all the genes detected
+universal_Genes <- unique(Nombre_genes$ensembl_gene_id)
+Background_Genes <- as.data.frame(universal_Genes)
+write.table(Background_Genes, "Background.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# Saving a list with all the detected genes (background) 
+```
+
+These list of genes can be used in online programs like ShinyGO or panther to do the enrichment analysis. You can also annotate these genes (taht are in ensembl ID) without using R in Biomart website and read about them on uniprot.
+There are also a program called IDEP that automatically do all the diferential expresion analysis 
+
+
+
+
+
+

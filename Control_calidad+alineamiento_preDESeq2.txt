@@ -1,0 +1,33 @@
+## 1. Control de calidad, alineamiento y preparación de archivos en linux.
+
+### 1.1. Control de calidad. Fastq, Multiqc y Trimmomatric
+
+Tras recibir las secuencias, es importante comprobar que se encuantran sincronizados los dos archivos correspondientes a cada muestra. Para ello, empleamos los comandos head y tail en el terminal de linux para comprobar que la posición donde han sido secuenciadas es la misma en ambos archivos.
+
+A continuación, analizamos los distintos archivos .fastq.gz con el programa Fastqc a través del comando:
+
+fastqc -t 4 ruta_a_archivos.fastq.gz -o directorio_de_salida.
+
+Tras esto, se generan una serie de archivos que nos permitirán, tras ejecutar "multiqc .", crear un reporte con la información a cerca de la calidad de las secuencias obtenidas.
+
+Tras ver ese reporte, podemos emplear Trimmomatric para arreglar o eliminar aquellas secuencias de peor calidad. Para ello, se ejecutaría el siguiente comando:
+
+trimmomatic PE -threads 4 input_FORWARD.fastq.gz input_REVERSE.fastq.gz clean_FORWARD.fastq.gz un_FORWARD.fastq.gz clean_REVERSE.fastq.gz un_REVERSE.fastq.gz ILLUMINACLIP:Alladapter.fa:2:30:10:2:keepBothRead LEADING:3 TRAILING:3 MINLEN:36 2> trimmed_reads/file.log 
+
+2 input files y 4 output  
+
+Esto se ejecutaría para cada muestra, generando también una serie de archivos que, de nuevo, con "multiqc .", podemos generar un reporte para ver cuantas secuencias han quedado, cuantas han sido eliminadas, etc.
+
+Se nos generan también los archivos "limpios" con los que podemos hacer el alineamiento en Kallisto
+
+### 1.2. Alineamiento con kallisto
+
+1. Crear índice o emplear el disponible (transcriptoma) de Ensembl (archivo.idx). Este archivo se encuentra en una página de DitHub a la que se accede a partir del manual de kallisto en el apartado del flag "index". 
+
+2. Alineamiento con:
+
+./kallisto quant -i transcriptome.idx -o directorio_de_salida -b 100 --rf-stranded ruta_a_forward.fastq.gz ruta_a_reverse.fastq.gz
+
+OJO: MIRAR MANUAL KALLISTO Y USAR FR O RF STRANDED SEGÚN SEAN MIS LECTURAS
+
+3. Se generan archivos run.json, abundance.h5 y abundance.tsv por cada alineamiento. El archivo abundance.h5 será el que necesitaremos como input para el análisis de expresión diferencial en DESeq2

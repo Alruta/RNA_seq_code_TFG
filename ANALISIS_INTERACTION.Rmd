@@ -1,0 +1,578 @@
+---
+title: "ANALISIS DE INTERACCIÓN"
+author: "Álvaro Ruiz Tabas"
+date: '2022-06-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# R project
+
+## 1. Control de calidad, alineamiento y preparación de archivos en linux.
+
+### 1.1. Control de calidad. Fastqc, Multiqc y Trimmomatric
+
+Tras recibir las secuencias, es importante comprobar que se encuantran sincronizados los dos archivos correspondientes a cada muestra. Para ello, empleamos los comandos head y tail en el terminal de linux para comprobar que la posición donde han sido secuenciadas es la misma en ambos archivos.
+
+A continuación, analizamos los distintos archivos .fastq.gz con el programa Fastqc a través del comando:
+
+fastqc -t 4 ruta_a_archivos.fastq.gz -o directorio_de_salida.
+
+Tras esto, se generan una serie de archivos que nos permitirán, tras ejecutar "multiqc .", crear un reporte con la información a cerca de la calidad de las secuencias obtenidas.
+
+Tras ver ese reporte, podemos emplear Trimmomatric para arreglar o eliminar aquellas secuencias de peor calidad. Para ello, se ejecutaría el siguiente comando:
+
+trimmomatic PE -threads 4 input_FORWARD.fastq.gz input_REVERSE.fastq.gz clean_FORWARD.fastq.gz un_FORWARD.fastq.gz clean_REVERSE.fastq.gz un_REVERSE.fastq.gz ILLUMINACLIP:Alladapter.fa:2:30:10:2:keepBothRead LEADING:3 TRAILING:3 MINLEN:36 2> trimmed_reads/file.log 
+
+2 input files y 4 output  
+
+Esto se ejecutaría para cada muestra, generando también una serie de archivos que, de nuevo, con "multiqc .", podemos generar un reporte para ver cuantas secuencias han quedado, cuantas han sido eliminadas, etc.
+
+Se nos generan también los archivos "limpios" con los que podemos hacer el alineamiento en Kallisto
+
+### 1.2. Alineamiento con kallisto
+
+1. Crear índice o emplear el disponible (transcriptoma) de Ensembl (archivo.idx). Este archivo se encuentra en una página de DitHub a la que se accede a partir del manual de kallisto en el apartado del flag "index". 
+
+2. Alineamiento con:
+
+./kallisto quant -i transcriptome.idx -o directorio_de_salida -b 100 --fr-stranded ruta_a_forward.fastq.gz ruta_a_reverse.fastq.gz
+
+MIRAR MANUL KALLISTO CON FR O RF STRANDED SEGÚN SEAN MIS LECTURAS
+
+3. Se generan archivos run.json, abundance.h5 y abundance.tsv por cada alineamiento.
+
+Con estos archivos, elaboramos los archivos requeridos para emplear DESeq2.
+
+### 1.3. Creación de archivos para DESq2
+
+
+## 2. Visualización de los counts y DESeq2 en Rstudio.
+
+### 2.1. Paquetes necesarios
+```{r Instalación de paquetes, eval=FALSE} 
+# eval = FALSE para que al knitear no corran estos bloque de instalación de paquetes, poner como TRUE ci es necesaria la instalación. 
+
+install.packages(c("BiocManager", "dplyr", "gplots", "ggplot2","ggrepel", "biomaRt", "pheatmap", "reshape2", "RColorBrewer") )
+```
+
+```{r Instalación de paquetes de BiocManager, eval=FALSE}
+
+BiocManager::install(c("limma", "DESeq2", "AnnotationDbi", "org.Mm.eg.db", "ReportingTools", "GO.db", "GOstats", "pathview", "gage", "gageData", "select", "clusterProfiler"))
+```
+
+### 2.2. Importar datos 
+
+Empleamos el paquete tximport para generar un dataframe (counts_data) a partir de los archivos.h5 generados por Kallisto. En este archivo tenemos genes nombrando las filas, muestras nombrando columnas y los counts en la tabla.
+También generamos un archivo.csv con las muestras y condiciones que incorporamos a R.  
+
+```{r Importación de counts en .h5, message=FALSE}
+# message = FALSE para que no salgan los mensajes que se emiten por consola al correr el script en el knit.
+
+library(DESeq2)  #paquete que proporciona m?todos para analizar la expresion diferencial
+library(dplyr) # paquete que contiene funciones dise?adas para la manipulaci?n de marcos de datos
+library(tximport) #cuantificaciOn de la transcripci?n se ha hecho con Salmon, Kallisto, etc
+library(readxl) #leer archivos con extensi?n excel
+library(readODS) #leer archivos con extensi?n open document
+library(rhdf5) #paquete que permite el intercambio de conjuntos de datos y/o complejos entre R y otro software
+library(ggplot2)
+library(pheatmap)
+library(reshape2)
+library(RColorBrewer)
+
+#setwd("Ruta/al/directorio/de/trabajo")
+setwd("C:/Users/alrut/Desktop/Universidad/4º año bioquímica/TFG/RNA seq/RNA-seq_ANALISIS/")
+dir<-getwd()
+
+#A continuacion se utiliza el archivo que contiene solo la primera columna, el nombre de los genes, sin el signo mayor y hasta el .tX, donde X es un numero
+#Desde ubuntu la accion es:
+#cat Fragaria......fa | grep ">" | cut -f1 | cut -d" " -f1 | cut -b2- > nombresgenes.txt. Tambien se puede hacer con excel a partir de un archivo abundance.tsv
+
+Nombre_genes <- read.table("Nombre_genes.txt", head =FALSE)
+# se lee el archivo para cargar los nombres de los genes
+
+Nombre_genes <- cbind(Nombre_genes, Nombre_genes[,1]) 
+# se duplica el nombre de los genes por exigencia de tximport para Kallisto
+
+colnames(Nombre_genes) <- c("geneID", "transcriptsID")
+head(Nombre_genes)
+# Se pone geneID y transcriptID como nombre de las columnas de los genes
+
+write.table(Nombre_genes, file="Nombre_Gen_Transcrito.txt", sep="\t", quote = FALSE, row.names = FALSE) 
+# tabla sin comillas y sin los numeros de filas 
+
+# Desde el bloc de notas se crea un archivo que contenga el nombre de las carpetas donde están los archivos .h5. Este archivo se llama Disegno.txt y tiene como nombre de la columna Sample.
+
+samples <- read.table("Diseño.txt", head = TRUE) 
+# lee una tabla que contiene los nombres de los experimentos y Sample como head
+
+archivos <- file.path(dir, samples$Sample, "abundance.h5") 
+archivos
+# se incluye todas las carpetas con los datos que se juntan
+
+names(archivos) <- c("WT_control_1", "WT_control_2", "WT_control_3", "WT_control_4", "WT_NR_1", "WT_NR_2", "WT_NR_3", "WT_NR_4", "TG_control_1", "TG_control_2", "TG_control_3", "TG_NR_1", "TG_NR_2", "TG_NR_3", "TG_NR_4") 
+archivos
+# Se asigna nombre a los distintos archivos. Debe estar en el mismo orden que en Disgno.
+
+
+tx2gene <- read.table("Nombre_Gen_Transcrito.txt", header = TRUE) 
+head(tx2gene)
+# header para usar como cabecera el col.names
+# Crear la variable tx2gene, permitira la lectura de datos
+
+
+txi <- tximport(archivos, type = "kallisto", tx2gene = tx2gene, countsFromAbundance = "no", txOut = FALSE) 
+# Crear la variable txi para importa los datos de mapeo
+
+names(txi) #contiene abundance, counts, length, countsFromAbundance e infReps
+
+counts_data <- txi[["counts"]]
+counts_data <- as.data.frame(counts_data)
+# Generear cunts_data y pasar a dataframe
+
+head(counts_data) 
+# visualización de counts_data
+
+```
+ Crear también un archivo .csv con counts par meter en IDEP.
+```{r Importar sample imformation}
+
+colData <- read.csv('Sample_info.csv')
+# Archivo con el nombre de las muestras y las condiciones. 
+```
+
+Asegurarse de que la columna 1 son los nombres de los genes y no parte del dataframe. Para ello, se puede guardar el .csv sin nombre en la primera columna o como en el siguiente script. 
+
+Hay que comprobar que las filas de colData y las columnas de counts tienen el mismo nombre y orden
+
+```{r Comprobación de "sincronización" entre archivos}
+
+all(colnames(counts_data) %in% rownames(colData))
+# Comprobación de el nombre de las filas de Coldata es igual al nombre de las columnas de counts_data
+
+all(colnames(counts_data) == rownames(colData))
+# Comprobación de si están en el mismo orden 
+```
+
+### 2.3. Visualización de los counts
+```{r Representación de los counts por muestra. COMUN A WT-CONTROL VS WT-NR}
+
+summary(counts_data)
+# Sumario de counts data con información util y que se representará en el siguiente gráfico de barras (los couns totales)
+
+par(mar=c(8,4,4,1))
+barplot(colSums(counts_data)/1e6, names.arg = c("WT_control_1", "WT_control_2", "WT_control_3", "WT_control_4", "WT_NR_1", "WT_NR_2", "WT_NR_3", "WT_NR_4", "TG_control_1", "TG_control_2", "TG_control_3", "TG_NR_1", "TG_NR_2", "TG_NR_3", "TG_NR_4"), xlab = "", ylab = "Millones de lecturas", main = "Tamaño de las librerias", col = brewer.pal(8, name = "Accent"), las = 3, ylim = c(0,40))
+# Representación de los millones de lecturas de cada muestra. El primer comando es para los márgenes entre barras y el segundo para crear el gráfico de barras ajustar el eje y para que no salga 3,0+e7 y salgan las etiquetas (las=3)
+```
+
+```{r Representación logaritmica del los genes y los counts que tienen}
+
+logcountsdata <- log2(1+counts_data)
+logcountsdata<- as.data.frame(logcountsdata)
+
+# TODAS COPOSICIONES LIBRERIAS HECHAS
+
+# Histograma con la frecuencia de cada gen en escala logaritmica. Por ejemplo, hay 40.000 genes en esta muestra con 0 counts, la mayoría entre 5 y 12 counts (en logaritmico). El primer comando es para crear un dataframe con los datos en logaritmico.
+```
+
+```{r Representación de la similitud entre muestras}
+
+# TODAS COMPARACIONES DE GRUPOS CONSIGO MISMOS HECHAS.
+
+png("Comparación entre muestras WT-control y TG-NR 1.png", width = 400, height = 300)
+plot(logcountsdata$WT_control_1, logcountsdata$TG_NR_1, xlab = "Composición TG-NR 1", ylab = "Composición WT-control 1", main = "Comparación entre muestras WT-control y TG-NR 1", col = "yellow")
+dev.off()
+
+png("Comparación entre muestras WT-control y TG-NR 2.png", width = 400, height = 300)
+plot(logcountsdata$WT_control_2, logcountsdata$TG_NR_2, xlab = "Composición TG-NR 2", ylab = "Composición WT-control 2", main = "Comparación entre muestras WT-control y TG-NR 2", col = "yellow")
+dev.off()
+
+png("Comparación entre muestras TG-control y WT-NR 1.png", width = 400, height = 300)
+plot(logcountsdata$TG_control_3, logcountsdata$WT_NR_3, xlab = "Composición WT-NR 3", ylab = "Composición TG-control 3", main = "Comparación entre muestras TG-control y WT-NR 1", col = "yellow")
+dev.off()
+
+png("Comparación entre muestras TG-control y WT-NR 2.png", width = 400, height = 300)
+plot(logcountsdata$TG_control_2, logcountsdata$WT_NR_2, xlab = "Composición WT-NR 2", ylab = "Composición TG-control 2", main = "Comparación entre muestras TG-control y WT-NR 2", col = "yellow")
+dev.off()
+
+# Representamos una muestra respecto a otra. Se puede hacer también como plot(logcountsdata[,1], logcountsdata[,2]) para comparar la columna 1 y 2 e ir cambiando los numeros para cambiar las columnas a comparar
+#Si sale una linea perfecta de 45º es que son iguales. Las muestras con el mismo tratamiento o condiciones deben de sar parecidas a una linea de 45º y las que son diferentes tratamientos deben sar más distintas. 
+# Es interesante ver distintas comparaciones a la vez
+```
+
+### 2.4. DESeq2
+
+```{r Creación del dataset para DESeq2, message=FALSE}
+
+dds <- DESeqDataSetFromMatrix(countData = round (counts_data),
+colData = colData, design = ~ Genotipo + Tratamiento + Genotipo:Tratamiento) 
+
+#dds <- DESeqDataSetFromTximport(txi,
+#colData = colData, design = ~ Genotipo)
+
+# Creación del dataset que le gusta a DESeq2. El diseño cambia según estudio. A partir de Matrix o de Tximport. 
+# Uso FromMatrix pero counts_data se ha generado a partir de txi [counts]
+
+# design = ~ Nombre_del_tratamiento_de_colData para 1 factor
+# design = ~ Tratamiento1+Tratamiento2+Tratamiento1*Tratamiento2 para 2 factores. El último es para las comparaciones cruzadas
+
+dds$Tratamiento <- relevel(dds$Tratamiento, ref = "control")
+dds$Genotipo <- relevel(dds$Genotipo, ref = "WT")
+# Establecer el factor y la referencia con la que comparar
+```
+
+```{r Ejecutar DESeq2, message=FALSE}
+
+dds <- DESeq(dds)
+# Ejecución de DESeq2 sobre el dataset dds
+
+nrow(dds)
+resultsNames(dds)
+# Comprobación del número de filas de dds tras DESeq2. Debe ser igual al de counts_data
+```
+
+```{r Filtración del resultado de DESeq2}
+
+dds <- dds[rowSums(counts(dds)) >= 5]
+# Filtración del resultado de DESeq2. Te quedas solo con las filas (genes) con x número de counts. 
+
+nrow(dds)
+# Número de filas tras el filtrado
+```
+
+```{r Exportar datos normalizados}
+
+norm_Counts <- counts(dds, normalized = TRUE)
+# norm_Counts$ensembl_transcript_id = gsub("\\..*","", row.names(norm_Counts))
+norm_Counts <- as.data.frame(norm_Counts)
+nrow(dds)
+
+#write.table(norm_Counts, file="Normalized_Counts_INTERACTION.txt", sep="\t", quote = FALSE, row.names = TRUE) 
+# Archivo que pasar a excel pasando puntos a comas excepto en los nombres de los genes
+
+```
+
+## 3. Representación de los resultados de DESeq2 y análisis de expresión diferencial en Rstudio
+
+### 3.1. Exploración de los resultados de DESeq2
+```{r Comparaciones DESeq2}
+
+resultsNames(dds)
+# Comparaciones hechas por DESeq2
+```
+
+```{r Resultados de DESq2}
+
+res <- results(dds, name = "GenotipoTG.TratamientoNR")
+# Extraer resultados de dds para ver interciones. ¿Es el efecto del tratamiento diferente entre genotipos?
+
+res 
+summary(res)
+# Visualizar los resultados
+```
+
+```{r Ordenar y exportar resultados}
+
+res_Ordered <- res[order(res$padj),]
+res_Ordered_DF <- as.data.frame(res_Ordered)
+
+res_Ordered_DF <- na.omit(res_Ordered_DF)
+
+res_Ordered_DF$GENES <- ifelse(res_Ordered_DF$padj <= 0.05, "SIGNIFICATIVO", "NO SIGNIFICATIVO")
+# Para los colorinchis en ggplot2
+
+# write.table(res_Ordered, file="res_Ordered", sep="\t", quote = FALSE, row.names = TRUE) 
+# Archivo que pasar a excel pasando puntos a comas excepto en los nombres de los genes
+
+
+head(res_Ordered_DF)
+
+```
+
+```{r BiomaRt}
+library(org.Mm.eg.db) # Raton
+library(org.Hs.eg.db) # Humano
+library(biomaRt)
+library(tidyverse)
+
+##########biomaRt 
+
+res_Ordered_DF$ensembl_transcript_id = gsub("\\..*","", row.names(res_Ordered_DF))
+res_Ordered_DF$ensembl_transcript_id_version <- row.names(res_Ordered_DF)
+ENSEMBL_IDs <- as.data.frame(res_Ordered_DF$ensembl_transcript_id)
+colnames(ENSEMBL_IDs) <- "ensembl_transcript_id"
+# input list de los ID de los transcritos
+
+listEnsembl()
+ENSEMBL <- useEnsembl(biomart = "genes")#, mirror = "uswest")
+datasets <- listDatasets(ENSEMBL)
+# Base de datos disponibles. Buscar en datasets la que necesito según mi organismo
+
+ENSEMBL_CONECTION <- useEnsembl("ensembl", dataset = 'mmusculus_gene_ensembl')#,  mirror = 'uswest')                                 #Cambiar según organismo
+# Conectar database y dataset. Puedo usar useEnsemble o useMart. mirror es porque me daba error sin ello. Ese error suele ser cuando Ensembl está en mantenimiento
+
+attr <- listAttributes(ENSEMBL_CONECTION)
+filters <- listFilters(ENSEMBL_CONECTION)
+# Atributos y filtros de biomaRt para usarlos a continuación. Se pueden ver y buscar lo que necesitemos
+
+ensembl2gene <- getBM(attributes = c("ensembl_transcript_id",
+                                     "external_gene_name", "ensembl_gene_id"), # Datos a obtener
+                      filters = "ensembl_transcript_id", # Tipo de datos que aportas
+                      values = ENSEMBL_IDs$ensembl_transcript_id, # Input de datos
+                      mart = ENSEMBL_CONECTION) 
+
+idmap <- merge (x = ENSEMBL_IDs, y = ensembl2gene,
+               by="ensembl_transcript_id",  sort = FALSE) #, all.x=TRUE)
+# Para unir el dataframe con nombres de transcritos y de genes ya que no hy el mismo número y para algunos transcritos no se conoce el nombre del gen o el ENTREZ_ID
+
+res_Ordered_DF <- merge (x = res_Ordered_DF, y = idmap,
+               by="ensembl_transcript_id",  sort = FALSE)
+# Incorporar nombre de genes a resultados de DESEQ2 (res)
+
+row.names(res_Ordered_DF) <- res_Ordered_DF$ensembl_transcript_id_version
+# Para usar la columna con los nombres de los genes como nobres de filas
+
+# res_Ordered_DF <- res_Ordered_DF [,-1]
+write.table(res_Ordered_DF, file = "RESULTADOS_INTERACCION.txt", sep = "\t", quote = FALSE)
+
+```
+
+### 3.2. MA plot 
+```{r MA plot}
+
+png("MA plot 1 (INTERACCION).png", width = 500, height = 400)
+DESeq2::plotMA(res, ylim=c(-25,25), xlab = "Media normalizada de lecturas", ylab = "Log2 Fold Change", main = "Gráfico MA Interacción", colSig = "deeppink", colNonSig = "darkgray")
+# Representación MA plot de los resultados de DESeq2
+dev.off()
+
+```
+
+### 3.2. Pseudo-MAplot
+```{r Pseudo MAplot}
+
+png("MA plot 2 (INTERACCION).png", width = 500, height = 400)
+
+myColors <- c("darkgray", "deeppink")
+names(myColors) <- levels(res_Ordered_DF$GENES)
+colScale <- scale_colour_manual(name = "GENES",values = myColors)
+# Establecer colores
+
+MA_plot <- ggplot(res_Ordered_DF, aes(x = log10(baseMean), y = log2FoldChange, color = GENES)) + geom_point() + theme(legend.position = "bottom")
+
+MA_plot <- MA_plot + colScale + labs(title="Gráfico MA Interacción") + theme (plot.title = element_text(hjust = 0.5))  
+# Poner titulos y ejes. Poner x ="", y = "" dentro de labs para ejes
+
+MA_plot
+
+dev.off()
+
+```
+
+### 3.3. Vulcano plot 
+VERSIÓN EASY
+```{r Volcano plot easy}
+
+
+png("Vulcano plot (INTERACCION).png", width = 500, height = 400)
+
+Vulcano <- ggplot(res_Ordered_DF, main = "Gráfica en volcan Interacción", aes(x = log2FoldChange, y = -log10(padj) , color = GENES)) + geom_point() + theme(legend.position = "bottom") 
+
+Vulcano <- Vulcano + colScale + labs(title= "Gráfica en volcan Interacción") + theme (plot.title = element_text(hjust = 0.5)) 
+
+Vulcano
+dev.off()
+
+```
+
+### 3.4. Gráfico de componentes principales y heatmap de similitud
+
+FORMA 1 con rlog
+```{r PCA 1. HECHO EN WT-CONTROL VS WT-NR}
+
+rld = rlog(dds)
+# Transformación logaritmica del resultado de dds guardado en la variable rld
+
+plotPCA(rld, intgroup = c("Genotipo", "Tratamiento"))
+
+# Representación a partir del resultado de DESeq2. INVESTIGAR INTERPRETACIÓN
+
+```
+FORMA 2 con vst. EN teoría son la misma transformación, pero no salen igual resultados.
+```{r PCA 2. HECHO EN WT-CONTROL VS WT-NR}
+
+vsd <- vst (dds, blind = FALSE)
+
+plot_PCA <- plotPCA(vsd, intgroup = c("Genotipo","Tratamiento"), returnData = TRUE) 
+# + labs(title="Grafico de componentes principales") + theme (plot.title = element_text(hjust = 0.5), legend.position = "bottom") 
+
+
+myColors2 <- c("green", "blueviolet", "red", "black")
+names(myColors2) <- levels(plot_PCA$group)
+colScale2 <- scale_colour_manual(name = "group",values = myColors2)
+
+percentVar <- round(100 * attr(plot_PCA, "percentVar"))
+
+plot_PCA <- ggplot(plot_PCA , aes( x = PC1, y = PC2, color = group)) + geom_point() + xlab(paste0("PC1: ", percentVar[1], "% varianza")) + ylab(paste0("PC2: ", percentVar[2], "% varianza"))+ labs(title="Gráfico de componentes principales") + theme (plot.title = element_text(hjust = 0.5), legend.position = "bottom") + colScale2
+
+plot_PCA
+
+```
+A parir de las distancias, podmeos generar un heatmap que represente la similitud entre muestras. 
+
+```{r Heatmap similitud. HECHO EN WT-CONTROL VS WT-NR}
+
+sampleDists <- dist(t(assay(vsd)))
+
+sampleDistMatrix <- as.matrix(sampleDists)
+
+# rownames(sampleDistMatrix) <- paste(vsd$Genotipo, vsd$Tratamiento, sep="-")
+
+# colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Greens")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows= sampleDists,
+         clustering_distance_cols= sampleDists,
+         col=colors, angle_col = 45, cluster_rows = FALSE, cluster_cols = FALSE)
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows= sampleDists,
+         clustering_distance_cols= sampleDists,
+         col=colors, angle_col = 45)
+```
+
+### 3.5. Heatmap
+Versión easy
+```{r pheatmap}
+
+Sig_genes <- subset(res_Ordered_DF, padj <= 0.05)
+# Me quedo con los genes significantes
+
+All_sig <- merge(norm_Counts, Sig_genes, by = 0)
+# Junto los dataframe de los counts y los resultados del DESeq2
+
+Sig_counts <- All_sig[,c("WT_control_1", "WT_control_2", "WT_control_3", "WT_control_4", "WT_NR_1", "WT_NR_2", "WT_NR_3", "WT_NR_4", "TG_control_1", "TG_control_2", "TG_control_3", "TG_NR_1", "TG_NR_2", "TG_NR_3", "TG_NR_4")]
+# Me quedo solo con los counts de los genes significantes
+
+row.names(Sig_counts) <- All_sig$Row.names
+# Añado el nombre de los genes
+
+png("Heatmap Interacción.png", width = 600, height = 500)
+pheatmap(log2(Sig_counts + 1), scale = 'row', show_rownames = FALSE, treeheight_row = FALSE, treeheight_col = FALSE, main = "Mapa de calor para el término de interacción", labels_col = c("WT-control 1", "WT-control 2", "WT-control 3", "WT-control 4", "WT-NR 1", "WT-NR 2", "WT-NR 3", "WT-NR 4", "TG-control 1", "TG-control 2", "TG-control 3", "TG-NR 1", "TG-NR 2", "TG-NR 3", "TG-NR 4"), angle_col = 45, cluster_cols = F, border_color = FALSE)
+dev.off()
+```
+
+## 4. Enriquecimiento funcional
+
+### 4.1. Principales genes con expresión diferencial
+```{r Gen con mayor Fold Change usando orden de padjust value}
+library("ggbeeswarm")
+
+topGene = row.names(Sig_genes)[1]
+# Guardamos en la variable topGene el nombre del gen que está en primera posición
+
+Plot_counts <- plotCounts(dds[,c("WT_control_1", "WT_control_2", "WT_control_3", "WT_control_4", "WT_NR_1", "WT_NR_2", "WT_NR_3", "WT_NR_4", "TG_control_1", "TG_control_2", "TG_control_3", "TG_NR_1", "TG_NR_2", "TG_NR_3", "TG_NR_4")], gene=topGene, intgroup = c("Genotipo", "Tratamiento"), returnData = TRUE) 
+# Guardar los datos como tabla
+
+Plot_counts <- ggplot(Plot_counts, aes(x = Genotipo:Tratamiento , y = count)) + scale_y_log10() +  geom_beeswarm(cex = 3)
+
+# Generar gráfico con ggplot y la tabla anterior
+png("TOP_gene Interacción.png", width = 600, height = 500)
+Plot_counts <- Plot_counts + labs(title="Expresión diferencial de Mbnl1", x = "Grupo", y = "Counts") + theme (plot.title = element_text(hjust = 0.5)) 
+# Incorporar etiquetas y demás
+
+Plot_counts 
+dev.off()
+```
+
+Se podría hacer con el segundo, tercero .... gen con mayor fold change Y REPRESENTAR TODOS. MIRAR VIDEO MIKE VANDEWAY DESEQ2 PART 2 MIN 58 (ANTES)
+
+```{r Top genes heatmap}
+
+Top_10 <- res_Ordered_DF [1:10,]
+
+Top_10 <- merge(Top_10, norm_Counts, by = 0)
+row.names(Top_10) <- Top_10$external_gene_name
+
+keep <- c("WT_control_1", "WT_control_2", "WT_control_3", "WT_control_4", "WT_NR_1", "WT_NR_2", "WT_NR_3", "WT_NR_4", "TG_control_1", "TG_control_2", "TG_control_3", "TG_NR_1", "TG_NR_2", "TG_NR_3", "TG_NR_4")
+
+Top_10 <- Top_10[,names(Top_10) %in% keep]
+
+png("TOP_10 heatmap Interaccion.png", width = 600, height = 500)
+
+pheatmap(log2(Top_10 +1), treeheight_row = FALSE, treeheight_col = FALSE, main = "Mapa de calor con los 10 principales genes para término de interacción", labels_col = c("WT-control 1", "WT-control 2", "WT-control 3", "WT-control 4", "WT-NR 1", "WT-NR 2", "WT-NR 3", "WT-NR 4", "TG-control 1", "TG-control 2", "TG-control 3", "TG-NR 1", "TG-NR 2", "TG-NR 3", "TG-NR 4"), angle_col = 45, cluster_cols = F, border_color = FALSE)
+
+dev.off()
+
+```
+
+```{r Top genes puntos.MIRAR COMO HACER}
+
+Top_10_m <- melt(as.matrix(Top_10))
+# reordenar info
+names(Top_10_m) <- c("genes", "Sample", "Exp")
+# renombrar columnas
+
+Top_10_m$Genotipo <- ifelse(grepl("WT", Top_10_m$Sample), "WT", "TG")
+Top_10_m$Tratamiento <- ifelse(grepl("control", Top_10_m$Sample), "control", "NR")
+
+
+myColors2 <- c("red", "blue", "yellow", "purple")
+names(myColors2) <- levels(Top_10_m$Grupo)
+colScale2 <- scale_colour_manual(name = "G",values = myColors2)
+
+TOP_GENES <- ggplot(Top_10_m , aes( x = Genotipo:Tratamiento, y = log2(Exp +1), color = Genotipo)) + geom_point() + facet_grid(~ genes) + labs(title="Expresión diferencial de los principales genes", x = "", y = "Log2 de las lecturas") + theme (plot.title = element_text(hjust = 0.5), legend.position = "bottom", axis.text.x =element_blank()) + colScale2
+
+TOP_GENES
+
+```
+
+### 4.2. Gene Ontology
+```{r Preparación y selección de genes}
+
+library(GO.db)
+library(GOstats)
+
+sig_lfc <- 0.5
+# Establezco un valor de fold change significativo
+
+select_Genes_Up <- unique(All_sig[All_sig$log2FoldChange > sig_lfc, 'ensembl_gene_id'])
+select_Genes_Down <- unique(All_sig[All_sig$log2FoldChange < (-sig_lfc), 'ensembl_gene_id'])
+# Selección de los genes up y down regulated según su fold change sea mayor o menor del fold change que establezco como significativo (4).
+
+DE_Genes <- unique(All_sig$ensembl_gene_id) # Todos los genes con expresión diferencial
+cutOff <- 0.01
+# El conjunto total de genes
+
+DE_GENES <- as.data.frame(DE_Genes)
+write.table(DE_GENES, "DE_GENES_Interacción.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# GUardar genes como variable y generar archivo 
+
+GENES_UP <- as.data.frame(select_Genes_Up)
+GENES_DOWN <- as.data.frame(select_Genes_Down)
+write.table(GENES_UP, "GENES_UP_Interacción.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(GENES_DOWN, "GENES_DOWN_Interación.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# Guardar genes up y down
+
+
+Nombre_genes$ensembl_transcript_id = gsub("\\..*","", Nombre_genes$geneID)
+# Nombre_genes
+
+Nombre_genes <- getBM(attributes = c("ensembl_transcript_id",
+                                     "ensembl_gene_id"), # Datos a obtener
+                      filters = "ensembl_transcript_id", # Tipo de datos que aportas
+                      values = Nombre_genes$ensembl_transcript_id, # Input de datos
+                      mart = ENSEMBL_CONECTION) 
+
+universal_Genes <- unique(Nombre_genes$ensembl_gene_id)
+Background_Genes <- as.data.frame(universal_Genes)
+write.table(Background_Genes, "Background_Genes_Interacción.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# Lista con todos los genes detectados
+```
+
+Con las listas de genes, puedo ir a la página de Gene Ontology o Shiny, meter el listado de genes y realizar el enriquecimiento funcional y sus representaciones. 
+
+Los siguientes chunks eran intentos de realizar el enriquecimiento funcional a través de R, pero las representaciones daban problemas y kegg no me conectaba con el servidor. Lo haré en Shiny y IDEP (principalmente en shiny). 
+
